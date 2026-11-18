@@ -33,6 +33,9 @@ TICKER_PARAMS: dict[str, dict[str, float]] = {
 # Default parameters for tickers not in the list above (dynamically added)
 DEFAULT_PARAMS: dict[str, float] = {"sigma": 0.25, "mu": 0.05}
 
+# Starting price range for tickers without a seed price
+UNKNOWN_PRICE_RANGE: tuple[float, float] = (50.0, 300.0)
+
 # Correlation groups for the simulator's Cholesky decomposition
 # Tickers in the same group have higher intra-group correlation
 CORRELATION_GROUPS: dict[str, set[str]] = {

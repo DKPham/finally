@@ -18,24 +18,24 @@ class PriceCache:
     def __init__(self) -> None:
         self._prices: dict[str, PriceUpdate] = {}
         self._lock = Lock()
-        self._version: int = 0  # Monotonically increasing; bumped on every update
+        self._version: int = 0  # Bumped on every mutation (update and remove)
 
     def update(self, ticker: str, price: float, timestamp: float | None = None) -> PriceUpdate:
         """Record a new price for a ticker. Returns the created PriceUpdate.
 
-        Automatically computes direction and change from the previous price.
-        If this is the first update for the ticker, previous_price == price (direction='flat').
+        First write for a ticker: previous_price == price (direction 'flat') and
+        session_open == price. Later writes carry session_open forward unchanged.
         """
+        price = round(float(price), 2)
+        ts = timestamp if timestamp is not None else time.time()
         with self._lock:
-            ts = timestamp or time.time()
             prev = self._prices.get(ticker)
-            previous_price = prev.price if prev else price
-
             update = PriceUpdate(
                 ticker=ticker,
-                price=round(price, 2),
-                previous_price=round(previous_price, 2),
+                price=price,
+                previous_price=prev.price if prev else price,
                 timestamp=ts,
+                session_open=prev.session_open if prev else price,
             )
             self._prices[ticker] = update
             self._version += 1
@@ -57,14 +57,19 @@ class PriceCache:
         return update.price if update else None
 
     def remove(self, ticker: str) -> None:
-        """Remove a ticker from the cache (e.g., when removed from watchlist)."""
+        """Forget a ticker entirely (session_open included).
+
+        Bumps the version so SSE clients receive a batch without the ticker.
+        """
         with self._lock:
-            self._prices.pop(ticker, None)
+            if self._prices.pop(ticker, None) is not None:
+                self._version += 1
 
     @property
     def version(self) -> int:
-        """Current version counter. Useful for SSE change detection."""
-        return self._version
+        """Monotonic mutation counter, used for SSE change detection."""
+        with self._lock:
+            return self._version
 
     def __len__(self) -> int:
         with self._lock:

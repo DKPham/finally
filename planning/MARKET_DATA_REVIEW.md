@@ -270,3 +270,40 @@ assert PriceCache().update("A", 1.0, timestamp=0.0).timestamp != 0.0
 6. **F10** cleanups and the §5 test gaps, then re-run coverage. The target is `stream.py` ≥ 80%.
 
 Checklist §16 of `MARKET_DATA_DESIGN.md` already maps these to code. Once items 1–4 are done, Massive mode should be smoke-tested once against a real key, paid if available and free otherwise, using the script in design §8.4.
+
+---
+
+## 7. Resolution (2026-11-18)
+
+All findings are fixed. Afterwards the suite has **146 tests passing** (up from 73), and passes again under `-W error`, so there are no warnings. Nine consecutive runs gave no flaky results. `ruff check` and `ruff format --check` are clean. Coverage is **99%**: `stream.py` 100% (up from 33%), `massive_client.py` 100%, `simulator.py` 99% (only a defensive duplicate guard is uncovered).
+
+| Finding | Fix | Tests |
+|---|---|---|
+| F1 | `quote_from_snapshot()` reads `last_trade.sip_timestamp` (ns), falling back to `snapshot.updated`, and converts to seconds | `test_massive.py::TestQuoteFromSnapshot` with real `TickerSnapshot.from_dict` models |
+| F2 | `NOT_AUTHORIZED` switches permanently to grouped-daily EOD mode: walks back up to 5 days, refreshes every 300 s, keeps a whole-market close table so new tickers are priced at once | `TestEodFallback` (6 tests) |
+| F3 | `PriceUpdate.session_open` (defaults to price) and `session_change_percent`, both in `to_dict()`; the cache sets session_open on first write and carries it forward | `test_models.py::TestSessionChange`, `test_cache.py::TestPriceCacheSession` |
+| F4 | `remove()` bumps the version (only when something was removed); the stream emits `{}` batches | `test_stream.py` removal and empty-batch tests |
+| F5 | Ticker list copied for the worker thread; results filtered against the current tracked set after the await | `test_removed_during_inflight_poll_is_not_resurrected`, `test_worker_thread_gets_a_copy_of_tickers` |
+| F6 | Fallback chain `last_trade.price → min.close → day.close → prev_day.close`, skipping zeros | parametrised fallback test |
+| F7 | `APIRouter` created inside `create_stream_router()` | `TestRouterFactory` |
+| F8 | Both sources normalise and de-duplicate in `start` / `add_ticker` / `remove_ticker` | `test_contract.py` (both sources), simulator-source tests |
+| F9 | Dev tools moved to `[dependency-groups] dev` (plus `httpx`), so `uv sync` / `uv run pytest` just work; docs updated; PLAN §12 Docker step now `uv sync --frozen --no-dev` | — |
+| F10a | `timestamp if timestamp is not None` | `test_explicit_zero_timestamp_is_kept` |
+| F10b | `version` read under the lock | concurrent-writer test |
+| F10c | Simulator `add_ticker` before `start()` logs a warning; the call is a documented no-op | `test_add_before_start_is_ignored_with_warning` |
+| F10d | Generator no longer swallows `CancelledError`; disconnect logged in `finally` | `test_stops_on_disconnect` |
+| F10e | `: keep-alive` comment after 15 s of silence | heartbeat tests |
+| F10f | Left as is (acceptable; documented) | — |
+| F10g | Same error logged once at ERROR, then DEBUG; "recovered" logged at INFO | `test_repeated_error_logged_once_then_recovery` |
+| F10h | `LinAlgError` falls back to independent draws | `test_non_positive_definite_falls_back_to_independent` |
+| F10i | `SEED_PRICES.get(t) or random.uniform(*UNKNOWN_PRICE_RANGE)`; params copied | `test_seeded_tickers_do_not_consume_random_draws` |
+| F10j | `ruff format` applied | — |
+| F10k | Deprecated `event_loop_policy` fixture removed | — |
+| F10l | `MARKET_DATA_SUMMARY.md`, `backend/CLAUDE.md`, `backend/README.md`, `MARKET_INTERFACE.md` §8 updated | — |
+
+All the §5 test gaps are closed: real SDK models, a shared contract suite, SSE generator tests plus a real-uvicorn HTTP streaming test, the race test, GBM statistics and correlation tests, and a full-default-set Cholesky test.
+
+**Not done:**
+- The optional `MASSIVE_POLL_INTERVAL` setting from `MARKET_DATA_DESIGN.md` §9. It is not in PLAN §5 and the review did not require it.
+- The app-layer tracking service and lifespan wiring (design §11). These belong with the DB and routes work.
+- A live Massive smoke test. No API key is available in this environment.

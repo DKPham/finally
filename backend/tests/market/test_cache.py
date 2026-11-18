@@ -101,3 +101,65 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+class TestPriceCacheSession:
+    """session_open tracking and SSE-relevant versioning."""
+
+    def test_first_write_sets_session_open(self):
+        update = PriceCache().update("AAPL", 190.0)
+        assert update.session_open == 190.0
+        assert update.direction == "flat"
+
+    def test_session_open_carries_forward(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.update("AAPL", 191.0)
+        update = cache.update("AAPL", 189.5)
+        assert update.session_open == 190.0
+        assert update.previous_price == 191.0
+        assert update.direction == "down"
+        assert update.session_change_percent == round((189.5 - 190.0) / 190.0 * 100, 4)
+
+    def test_session_open_is_rounded_like_price(self):
+        assert PriceCache().update("AAPL", 190.123).session_open == 190.12
+
+    def test_remove_then_readd_resets_session_open(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.remove("AAPL")
+        assert cache.update("AAPL", 200.0).session_open == 200.0
+
+    def test_remove_bumps_version(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        version = cache.version
+        cache.remove("AAPL")
+        assert cache.version == version + 1
+
+    def test_remove_unknown_does_not_bump_version(self):
+        cache = PriceCache()
+        version = cache.version
+        cache.remove("NOPE")
+        assert cache.version == version
+
+    def test_explicit_zero_timestamp_is_kept(self):
+        assert PriceCache().update("A", 1.0, timestamp=0.0).timestamp == 0.0
+
+    def test_concurrent_writers(self):
+        import threading
+
+        cache = PriceCache()
+
+        def writer(ticker: str) -> None:
+            for i in range(2000):
+                cache.update(ticker, 100.0 + i % 7)
+
+        threads = [threading.Thread(target=writer, args=(f"T{n}",)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert cache.version == 8 * 2000
+        assert len(cache) == 8
+        assert all(u.session_open == 100.0 for u in cache.get_all().values())

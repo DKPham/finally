@@ -501,7 +501,7 @@ Stage 1: Node 20 slim
 Stage 2: Python 3.12 slim
   - Install uv
   - Copy backend/
-  - uv sync --frozen (install Python dependencies from lockfile)
+  - uv sync --frozen --no-dev (install Python dependencies from lockfile, without test/lint tools)
   - Copy frontend build output into /app/static
   - Expose port 8000
   - CMD: uvicorn serving FastAPI app on 0.0.0.0:8000

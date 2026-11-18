@@ -128,11 +128,66 @@ class TestSimulatorDataSource:
         """Test creating source with custom event probability."""
         cache = PriceCache()
         # Very high event probability for testing
-        source = SimulatorDataSource(
-            price_cache=cache, update_interval=0.1, event_probability=1.0
-        )
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.1, event_probability=1.0)
         await source.start(["AAPL"])
 
         # Just verify it starts and stops cleanly
         await asyncio.sleep(0.2)
         await source.stop()
+
+
+@pytest.mark.asyncio
+class TestSimulatorDataSourceBehaviour:
+    async def test_seed_price_is_session_open(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.01)
+        await source.start(["AAPL"])
+        await asyncio.sleep(0.05)
+        await source.stop()
+        assert cache.get("AAPL").session_open == 190.0
+
+    async def test_tickers_are_normalized(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=60)
+        await source.start(["aapl", "AAPL", " msft "])
+        await source.add_ticker("aapl")
+        assert source.get_tickers() == ["AAPL", "MSFT"]
+        assert set(cache.get_all()) == {"AAPL", "MSFT"}
+        await source.remove_ticker("msft")
+        assert "MSFT" not in cache
+        await source.stop()
+
+    async def test_add_existing_ticker_does_not_rewrite_cache(self):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=60)
+        await source.start(["AAPL"])
+        version = cache.version
+        await source.add_ticker("AAPL")
+        assert cache.version == version
+        await source.stop()
+
+    async def test_add_before_start_is_ignored_with_warning(self, caplog):
+        source = SimulatorDataSource(price_cache=PriceCache())
+        await source.add_ticker("AAPL")
+        assert source.get_tickers() == []
+        assert "before start" in caplog.text
+
+    async def test_loop_survives_step_exception(self, caplog):
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.01)
+        await source.start(["AAPL"])
+        calls = {"n": 0}
+        real_step = source._sim.step
+
+        def flaky_step():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("boom")
+            return real_step()
+
+        source._sim.step = flaky_step
+        version = cache.version
+        await asyncio.sleep(0.08)
+        await source.stop()
+        assert "Simulator step failed" in caplog.text
+        assert cache.version > version

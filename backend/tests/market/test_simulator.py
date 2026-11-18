@@ -1,5 +1,11 @@
 """Tests for GBMSimulator."""
 
+import math
+import random
+
+import numpy as np
+import pytest
+
 from app.market.seed_prices import SEED_PRICES
 from app.market.simulator import GBMSimulator
 
@@ -126,6 +132,108 @@ class TestGBMSimulator:
         result = sim.step()
         price_str = str(result["AAPL"])
         # Check that we have at most 2 decimal places
-        if '.' in price_str:
-            decimal_part = price_str.split('.')[1]
+        if "." in price_str:
+            decimal_part = price_str.split(".")[1]
             assert len(decimal_part) <= 2
+
+
+class TestGBMStatistics:
+    """The engine's maths, checked empirically (events off, large dt, seeded)."""
+
+    @staticmethod
+    def _log_returns(sim: GBMSimulator, steps: int) -> dict[str, np.ndarray]:
+        prev = {t: sim.get_price(t) for t in sim.get_tickers()}
+        out: dict[str, list[float]] = {t: [] for t in prev}
+        for _ in range(steps):
+            sim.step()
+            for t in prev:
+                price = sim.get_price(t)
+                out[t].append(math.log(price / prev[t]))
+                prev[t] = price
+        return {t: np.array(v) for t, v in out.items()}
+
+    def test_volatility_and_drift_match_parameters(self):
+        np.random.seed(0)
+        random.seed(0)
+        dt = 1 / 252
+        sim = GBMSimulator(["AAPL"], dt=dt, event_probability=0)
+        r = self._log_returns(sim, 20_000)["AAPL"]
+        sigma, mu = 0.22, 0.05
+        assert r.std() == pytest.approx(sigma * math.sqrt(dt), rel=0.03)
+        assert r.mean() == pytest.approx(
+            (mu - sigma**2 / 2) * dt, abs=3 * r.std() / math.sqrt(len(r))
+        )
+
+    def test_sector_correlations(self):
+        np.random.seed(1)
+        random.seed(1)
+        sim = GBMSimulator(["AAPL", "MSFT", "TSLA", "JPM", "V"], dt=1 / 252, event_probability=0)
+        r = self._log_returns(sim, 20_000)
+        corr = lambda a, b: np.corrcoef(r[a], r[b])[0, 1]  # noqa: E731
+        assert corr("AAPL", "MSFT") == pytest.approx(0.6, abs=0.05)
+        assert corr("AAPL", "TSLA") == pytest.approx(0.3, abs=0.05)
+        assert corr("JPM", "V") == pytest.approx(0.5, abs=0.05)
+        assert corr("AAPL", "JPM") == pytest.approx(0.3, abs=0.05)
+
+    def test_prices_stay_positive_and_finite_long_run(self):
+        np.random.seed(2)
+        random.seed(2)
+        sim = GBMSimulator(list(SEED_PRICES), event_probability=0.01)
+        for _ in range(10_000):
+            prices = sim.step()
+        assert all(p > 0 and math.isfinite(p) for p in prices.values())
+
+    def test_events_jump_2_to_5_percent(self):
+        random.seed(3)
+        np.random.seed(3)
+        # dt=0 removes diffusion, so any move is purely the shock event
+        sim = GBMSimulator(["AAPL"], dt=0.0, event_probability=1.0)
+        for _ in range(200):
+            before = sim.get_price("AAPL")
+            sim.step()
+            move = abs(sim.get_price("AAPL") / before - 1)
+            assert 0.02 - 1e-9 <= move <= 0.05 + 1e-9
+
+    def test_no_events_when_probability_zero(self):
+        sim = GBMSimulator(["AAPL"], dt=0.0, event_probability=0.0)
+        sim.step()
+        assert sim.get_price("AAPL") == SEED_PRICES["AAPL"]
+
+
+class TestGBMStructure:
+    def test_full_default_set_cholesky(self):
+        sim = GBMSimulator(list(SEED_PRICES))
+        assert sim._cholesky.shape == (10, 10)
+
+    def test_forty_tickers_supported(self):
+        sim = GBMSimulator([f"T{i}" for i in range(40)])
+        assert sim._cholesky.shape == (40, 40)
+        assert len(sim.step()) == 40
+
+    def test_non_positive_definite_falls_back_to_independent(self, monkeypatch):
+        sim = GBMSimulator(["AAPL"])
+        monkeypatch.setattr(GBMSimulator, "_pairwise_correlation", staticmethod(lambda a, b: 1.5))
+        sim.add_ticker("MSFT")
+        assert sim._cholesky is None
+        assert len(sim.step()) == 2
+
+    def test_seeded_tickers_do_not_consume_random_draws(self):
+        random.seed(42)
+        GBMSimulator(list(SEED_PRICES))
+        after_seeded = random.random()
+        random.seed(42)
+        assert random.random() == after_seeded
+
+    def test_unknown_ticker_uses_default_params_copy(self):
+        sim = GBMSimulator(["ZZZZ"])
+        sim._params["ZZZZ"]["sigma"] = 9.9
+        from app.market.seed_prices import DEFAULT_PARAMS
+
+        assert DEFAULT_PARAMS["sigma"] == 0.25
+
+    def test_readd_after_remove(self):
+        sim = GBMSimulator(["AAPL", "MSFT"])
+        sim.remove_ticker("MSFT")
+        sim.add_ticker("MSFT")
+        assert sim.get_tickers() == ["AAPL", "MSFT"]
+        assert sim._cholesky.shape == (2, 2)

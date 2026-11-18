@@ -8,36 +8,50 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True)
 class PriceUpdate:
-    """Immutable snapshot of a single ticker's price at a point in time."""
+    """Immutable snapshot of one ticker's latest price plus derived fields."""
 
     ticker: str
     price: float
     previous_price: float
     timestamp: float = field(default_factory=time.time)  # Unix seconds
+    # First price recorded for this ticker since server start. None → same as price.
+    session_open: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.session_open is None:
+            # frozen + slots still permits object.__setattr__ during init
+            object.__setattr__(self, "session_open", self.price)
 
     @property
     def change(self) -> float:
-        """Absolute price change from previous update."""
+        """Absolute price change from the previous update."""
         return round(self.price - self.previous_price, 4)
 
     @property
     def change_percent(self) -> float:
-        """Percentage change from previous update."""
+        """Percentage change from the previous update."""
         if self.previous_price == 0:
             return 0.0
         return round((self.price - self.previous_price) / self.previous_price * 100, 4)
 
     @property
     def direction(self) -> str:
-        """'up', 'down', or 'flat'."""
+        """'up', 'down', or 'flat' relative to the previous update."""
         if self.price > self.previous_price:
             return "up"
-        elif self.price < self.previous_price:
+        if self.price < self.previous_price:
             return "down"
         return "flat"
 
+    @property
+    def session_change_percent(self) -> float:
+        """Percentage change since session open (the watchlist's "Chg %" column)."""
+        if not self.session_open:
+            return 0.0
+        return round((self.price - self.session_open) / self.session_open * 100, 4)
+
     def to_dict(self) -> dict:
-        """Serialize for JSON / SSE transmission."""
+        """Serialize for JSON / SSE transmission (PLAN §6 shape)."""
         return {
             "ticker": self.ticker,
             "price": self.price,
@@ -46,4 +60,6 @@ class PriceUpdate:
             "change": self.change,
             "change_percent": self.change_percent,
             "direction": self.direction,
+            "session_open": self.session_open,
+            "session_change_percent": self.session_change_percent,
         }

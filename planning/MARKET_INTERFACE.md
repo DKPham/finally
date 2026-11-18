@@ -293,9 +293,9 @@ row = {"ticker": t, "price": u.price if u else None,
 
 | # | Item | File | Status |
 |---|---|---|---|
-| 1 | **Bug:** `snap.last_trade.timestamp` does not exist on the SDK's `LastTrade`. The field is `sip_timestamp` (ns). Every snapshot hits `AttributeError` and is skipped, so **Massive mode never populates the cache**. Tests mock it with `MagicMock`, which hides the bug | `massive_client.py:103`, `tests/market/test_massive.py:17` | **Fix** |
-| 2 | Add `session_open` to `PriceUpdate`/`PriceCache`, plus `session_change_percent` in `to_dict()` | `models.py`, `cache.py` | To do (PLAN §6) |
-| 3 | Price fallback chain (`lastTrade.p → min.c → day.c → prevDay.c`) | `massive_client.py` | To do |
-| 4 | Free-tier EOD fallback on `NOT_AUTHORIZED` | `massive_client.py` | To do |
-| 5 | `create_stream_router` attaches the route to a **module-level** `router`, so calling it twice registers `/prices` twice. Create the `APIRouter` inside the function | `stream.py:17` | Nice to have |
+| 1 | **Bug:** `snap.last_trade.timestamp` does not exist on the SDK's `LastTrade`. The field is `sip_timestamp` (ns). Every snapshot hits `AttributeError` and is skipped, so **Massive mode never populates the cache**. Tests mock it with `MagicMock`, which hides the bug | `massive_client.py:103`, `tests/market/test_massive.py:17` | **Done** (2026-11-18) |
+| 2 | Add `session_open` to `PriceUpdate`/`PriceCache`, plus `session_change_percent` in `to_dict()` | `models.py`, `cache.py` | **Done** (2026-11-18) |
+| 3 | Price fallback chain (`lastTrade.p → min.c → day.c → prevDay.c`) | `massive_client.py` | **Done** (2026-11-18) |
+| 4 | Free-tier EOD fallback on `NOT_AUTHORIZED` | `massive_client.py` | **Done** (2026-11-18) |
+| 5 | `create_stream_router` attaches the route to a **module-level** `router`, so calling it twice registers `/prices` twice. Create the `APIRouter` inside the function | `stream.py:17` | **Done** (2026-11-18) |
 | 6 | Tracked-ticker helper (§5) | new, app layer | To do with the portfolio/watchlist routes |

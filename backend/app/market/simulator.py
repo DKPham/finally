@@ -20,6 +20,7 @@ from .seed_prices import (
     SEED_PRICES,
     TICKER_PARAMS,
     TSLA_CORR,
+    UNKNOWN_PRICE_RANGE,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class GBMSimulator:
         event_probability: float = 0.001,
     ) -> None:
         self._dt = dt
+        self._sqrt_dt = math.sqrt(dt)
         self._event_prob = event_probability
 
         # Per-ticker state
@@ -97,7 +99,7 @@ class GBMSimulator:
 
             # GBM: S(t+dt) = S(t) * exp((mu - 0.5*sigma^2)*dt + sigma*sqrt(dt)*Z)
             drift = (mu - 0.5 * sigma**2) * self._dt
-            diffusion = sigma * math.sqrt(self._dt) * z_correlated[i]
+            diffusion = sigma * self._sqrt_dt * z_correlated[i]
             self._prices[ticker] *= math.exp(drift + diffusion)
 
             # Random event: ~0.1% chance per tick per ticker
@@ -148,8 +150,9 @@ class GBMSimulator:
         if ticker in self._prices:
             return
         self._tickers.append(ticker)
-        self._prices[ticker] = SEED_PRICES.get(ticker, random.uniform(50.0, 300.0))
-        self._params[ticker] = TICKER_PARAMS.get(ticker, dict(DEFAULT_PARAMS))
+        # `or` (not a .get default) so seeded tickers don't consume a random draw
+        self._prices[ticker] = SEED_PRICES.get(ticker) or random.uniform(*UNKNOWN_PRICE_RANGE)
+        self._params[ticker] = dict(TICKER_PARAMS.get(ticker, DEFAULT_PARAMS))
 
     def _rebuild_cholesky(self) -> None:
         """Rebuild the Cholesky decomposition of the ticker correlation matrix.
@@ -169,7 +172,13 @@ class GBMSimulator:
                 corr[i, j] = rho
                 corr[j, i] = rho
 
-        self._cholesky = np.linalg.cholesky(corr)
+        try:
+            self._cholesky = np.linalg.cholesky(corr)
+        except np.linalg.LinAlgError:
+            # Impossible with the current constants (block structure is positive
+            # definite), but a future tweak must never crash the price loop.
+            logger.warning("Correlation matrix not positive definite; using independent draws")
+            self._cholesky = None
 
     @staticmethod
     def _pairwise_correlation(t1: str, t2: str) -> float:
@@ -217,17 +226,19 @@ class SimulatorDataSource(MarketDataSource):
         self._task: asyncio.Task | None = None
 
     async def start(self, tickers: list[str]) -> None:
+        normalized = _normalize_all(tickers)
         self._sim = GBMSimulator(
-            tickers=tickers,
+            tickers=normalized,
             event_probability=self._event_prob,
         )
-        # Seed the cache with initial prices so SSE has data immediately
-        for ticker in tickers:
+        # Seed the cache so SSE and trades have prices before the first tick.
+        # The seed is the first write, so it becomes session_open (PLAN §6).
+        for ticker in normalized:
             price = self._sim.get_price(ticker)
             if price is not None:
                 self._cache.update(ticker=ticker, price=price)
         self._task = asyncio.create_task(self._run_loop(), name="simulator-loop")
-        logger.info("Simulator started with %d tickers", len(tickers))
+        logger.info("Simulator started with %d tickers", len(normalized))
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -240,15 +251,26 @@ class SimulatorDataSource(MarketDataSource):
         logger.info("Simulator stopped")
 
     async def add_ticker(self, ticker: str) -> None:
-        if self._sim:
-            self._sim.add_ticker(ticker)
-            # Seed cache immediately so the ticker has a price right away
-            price = self._sim.get_price(ticker)
-            if price is not None:
-                self._cache.update(ticker=ticker, price=price)
-            logger.info("Simulator: added ticker %s", ticker)
+        """Track a ticker; its price is in the cache when this returns.
+
+        Must be called after start() (before start there is no simulator and the
+        call is a no-op, logged as a warning).
+        """
+        ticker = _normalize(ticker)
+        if self._sim is None:
+            logger.warning("Simulator: add_ticker(%s) called before start(); ignored", ticker)
+            return
+        if ticker in self._sim.get_tickers():
+            return
+        self._sim.add_ticker(ticker)
+        # Seed cache immediately so the ticker is tradable right away (PLAN §9)
+        price = self._sim.get_price(ticker)
+        if price is not None:
+            self._cache.update(ticker=ticker, price=price)
+        logger.info("Simulator: added ticker %s", ticker)
 
     async def remove_ticker(self, ticker: str) -> None:
+        ticker = _normalize(ticker)
         if self._sim:
             self._sim.remove_ticker(ticker)
         self._cache.remove(ticker)
@@ -268,3 +290,12 @@ class SimulatorDataSource(MarketDataSource):
             except Exception:
                 logger.exception("Simulator step failed")
             await asyncio.sleep(self._interval)
+
+
+def _normalize(ticker: str) -> str:
+    return ticker.upper().strip()
+
+
+def _normalize_all(tickers: list[str]) -> list[str]:
+    """Normalize and de-duplicate, preserving order."""
+    return list(dict.fromkeys(_normalize(t) for t in tickers))

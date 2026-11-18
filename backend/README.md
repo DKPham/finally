@@ -21,8 +21,8 @@ FastAPI backend for the FinAlly AI Trading Workstation.
 ## Running Tests
 
 ```bash
-# Install dependencies
-uv sync --dev
+# Install dependencies (dev tools are a default dependency group)
+uv sync
 
 # Run all tests
 uv run pytest
@@ -39,13 +39,13 @@ uv run pytest -v
 
 ## Environment Variables
 
-- `MASSIVE_API_KEY` - Optional. If set, use real market data from Massive API. If not set, use the built-in simulator.
+- `MASSIVE_API_KEY` - Optional. If set, use real market data from Massive API. If not set, use the built-in simulator. Paid plans use live snapshots; a free plan automatically falls back to end-of-day closes.
 
 ## Development
 
 ```bash
 # Install dependencies
-uv sync --dev
+uv sync
 
 # Run linter
 uv run ruff check .

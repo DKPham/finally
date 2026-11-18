@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Request
@@ -14,29 +15,29 @@ from .cache import PriceCache
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/stream", tags=["streaming"])
 
+def create_stream_router(
+    price_cache: PriceCache,
+    interval: float = 0.5,
+    heartbeat: float = 15.0,
+) -> APIRouter:
+    """Create the SSE router bound to a price cache.
 
-def create_stream_router(price_cache: PriceCache) -> APIRouter:
-    """Create the SSE streaming router with a reference to the price cache.
-
-    This factory pattern lets us inject the PriceCache without globals.
+    A fresh APIRouter is built per call, so building several apps (e.g. in tests)
+    never registers /prices twice on a shared router.
     """
+    router = APIRouter(prefix="/api/stream", tags=["streaming"])
 
     @router.get("/prices")
     async def stream_prices(request: Request) -> StreamingResponse:
-        """SSE endpoint for live price updates.
-
-        Streams all tracked ticker prices every ~500ms. The client connects
-        with EventSource and receives events in the format:
+        """SSE endpoint: one event per cache change, each a batch of all tracked tickers.
 
             data: {"AAPL": {"ticker": "AAPL", "price": 190.50, ...}, ...}
 
-        Includes a retry directive so the browser auto-reconnects on
-        disconnection (EventSource built-in behavior).
+        Starts with a retry directive so EventSource reconnects after 1 s.
         """
         return StreamingResponse(
-            _generate_events(price_cache, request),
+            _generate_events(price_cache, request, interval, heartbeat),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -52,36 +53,34 @@ async def _generate_events(
     price_cache: PriceCache,
     request: Request,
     interval: float = 0.5,
+    heartbeat: float = 15.0,
 ) -> AsyncGenerator[str, None]:
-    """Async generator that yields SSE-formatted price events.
+    """Yield SSE-formatted events until the client disconnects.
 
-    Sends all prices every `interval` seconds. Stops when the client
-    disconnects (detected via request.is_disconnected()).
+    - Emits a batch whenever the cache version changes. The batch may be ``{}``
+      when nothing is tracked, so clients (which replace their price map on each
+      event) drop removed tickers.
+    - Emits a ``: keep-alive`` comment after ``heartbeat`` seconds of silence so
+      idle proxies keep the connection open (e.g. Massive end-of-day mode).
     """
-    # Tell the client to retry after 1 second if the connection drops
     yield "retry: 1000\n\n"
 
+    client = request.client.host if request.client else "unknown"
+    logger.info("SSE client connected: %s", client)
     last_version = -1
-    client_ip = request.client.host if request.client else "unknown"
-    logger.info("SSE client connected: %s", client_ip)
-
+    last_sent = time.monotonic()
     try:
-        while True:
-            # Check for client disconnect
-            if await request.is_disconnected():
-                logger.info("SSE client disconnected: %s", client_ip)
-                break
-
-            current_version = price_cache.version
-            if current_version != last_version:
-                last_version = current_version
-                prices = price_cache.get_all()
-
-                if prices:
-                    data = {ticker: update.to_dict() for ticker, update in prices.items()}
-                    payload = json.dumps(data)
-                    yield f"data: {payload}\n\n"
-
+        while not await request.is_disconnected():
+            version = price_cache.version
+            if version != last_version:
+                last_version = version
+                batch = {t: u.to_dict() for t, u in price_cache.get_all().items()}
+                yield f"data: {json.dumps(batch)}\n\n"
+                last_sent = time.monotonic()
+            elif time.monotonic() - last_sent >= heartbeat:
+                yield ": keep-alive\n\n"
+                last_sent = time.monotonic()
             await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("SSE stream cancelled for: %s", client_ip)
+    finally:
+        # Runs on disconnect and on cancellation; cancellation still propagates.
+        logger.info("SSE client disconnected: %s", client)
