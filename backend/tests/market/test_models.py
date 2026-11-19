@@ -68,6 +68,23 @@ class TestPriceUpdate:
         assert result["change"] == 0.50
         assert result["change_percent"] == 0.2632  # (0.50 / 190.00) * 100
         assert result["direction"] == "up"
+        assert result["session_open"] == 190.50  # defaults to price
+        assert result["session_change_percent"] == 0.0
+
+    def test_session_change_percent(self):
+        """session_change_percent is relative to session_open."""
+        update = PriceUpdate(
+            ticker="AAPL", price=190.52, previous_price=190.41, timestamp=1.0, session_open=190.0
+        )
+        assert update.session_open == 190.0
+        assert update.session_change_percent == 0.2737
+        d = update.to_dict()
+        assert d["session_open"] == 190.0
+        assert d["session_change_percent"] == 0.2737
+
+    def test_session_change_percent_zero_open(self):
+        update = PriceUpdate(ticker="X", price=10.0, previous_price=10.0, session_open=0.0)
+        assert update.session_change_percent == 0.0
 
     def test_immutability(self):
         """Test that PriceUpdate is immutable."""

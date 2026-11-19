@@ -14,6 +14,11 @@ class PriceUpdate:
     price: float
     previous_price: float
     timestamp: float = field(default_factory=time.time)  # Unix seconds
+    session_open: float | None = None  # First price seen this session; defaults to price
+
+    def __post_init__(self) -> None:
+        if self.session_open is None:
+            object.__setattr__(self, "session_open", self.price)
 
     @property
     def change(self) -> float:
@@ -26,6 +31,13 @@ class PriceUpdate:
         if self.previous_price == 0:
             return 0.0
         return round((self.price - self.previous_price) / self.previous_price * 100, 4)
+
+    @property
+    def session_change_percent(self) -> float:
+        """Percentage change since the session open price."""
+        if not self.session_open:
+            return 0.0
+        return round((self.price - self.session_open) / self.session_open * 100, 4)
 
     @property
     def direction(self) -> str:
@@ -46,4 +58,6 @@ class PriceUpdate:
             "change": self.change,
             "change_percent": self.change_percent,
             "direction": self.direction,
+            "session_open": self.session_open,
+            "session_change_percent": self.session_change_percent,
         }

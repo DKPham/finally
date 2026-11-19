@@ -1,0 +1,45 @@
+# E2E test stack: the FinAlly app (fresh throwaway DB, mocked LLM) + a Playwright runner.
+#
+#   docker compose -f test/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from playwright
+#   docker compose -f test/docker-compose.test.yml down -v
+#
+# The HTML report and traces are written to test/playwright-report and test/test-results.
+name: finally-e2e
+
+services:
+  # NOTE: don't name this service "app": .app is an HSTS-preloaded TLD, so
+  # Chromium force-upgrades http://app:8000 to HTTPS (ERR_SSL_PROTOCOL_ERROR).
+  finally:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      LLM_MOCK: "true"
+      MASSIVE_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      # No bind mount: the DB lives inside the container and is thrown away.
+      DB_PATH: /app/db/finally.db
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status == 200 else 1)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
+    depends_on:
+      finally:
+        condition: service_healthy
+    working_dir: /work
+    environment:
+      BASE_URL: http://finally:8000
+      CI: "true"
+    volumes:
+      - ./:/work
+      # Keep the container's node_modules separate from the host's.
+      - /work/node_modules
+    ipc: host
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && npx playwright test"]

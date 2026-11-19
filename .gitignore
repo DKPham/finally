@@ -208,3 +208,10 @@ __marimo__/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# FinAlly runtime database (keep the directory via .gitkeep)
+db/*.db*
+!db/.gitkeep
+
+# Playwright MCP artifacts
+.playwright-mcp/

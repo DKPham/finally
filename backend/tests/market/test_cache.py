@@ -101,3 +101,36 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+
+class TestSessionOpen:
+    """session_open is recorded on the first write for a ticker."""
+
+    def test_first_write_sets_session_open(self):
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.0)
+        assert update.session_open == 190.0
+        assert update.session_change_percent == 0.0
+
+    def test_session_open_persists_across_updates(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.update("AAPL", 191.0)
+        update = cache.update("AAPL", 195.0)
+        assert update.session_open == 190.0
+        assert update.previous_price == 191.0
+        assert update.session_change_percent == round(5 / 190 * 100, 4)
+
+    def test_session_open_per_ticker(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.update("GOOGL", 175.0)
+        cache.update("AAPL", 200.0)
+        assert cache.get("AAPL").session_open == 190.0
+        assert cache.get("GOOGL").session_open == 175.0
+
+    def test_remove_resets_session_open(self):
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        cache.remove("AAPL")
+        assert cache.update("AAPL", 200.0).session_open == 200.0
